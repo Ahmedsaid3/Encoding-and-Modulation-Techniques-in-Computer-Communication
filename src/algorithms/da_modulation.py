@@ -82,39 +82,317 @@ class DigitalToAnalog:
         return np.array(demodulated_bits)
     
 
-# test the implementation
+    def modulate_bfsk(self, bits, baud_rate=1, freq_0=5, freq_1=10, sampling_rate=100):
+        """
+        Binary FSK (Frequency Shift Keying) Modulation.
+        Bit 0 -> Carrier with frequency freq_0
+        Bit 1 -> Carrier with frequency freq_1
+        """
+        bits = np.array(bits)
+        bit_duration = 1.0 / baud_rate
+        total_duration = len(bits) * bit_duration
+        total_points = int(total_duration * sampling_rate)
+        
+        time_axis = np.linspace(0, total_duration, total_points, endpoint=False)
+        
+        # Strategy: Create two full carrier waves for the entire duration
+        carrier_signal_0 = np.sin(2 * np.pi * freq_0 * time_axis)
+        carrier_signal_1 = np.sin(2 * np.pi * freq_1 * time_axis)
+        
+        # Create masks
+        mask_0 = np.zeros_like(time_axis)
+        mask_1 = np.zeros_like(time_axis)
+        
+        points_per_bit = int(sampling_rate * bit_duration)
+        
+        for i, bit in enumerate(bits):
+            start = i * points_per_bit
+            end = (i + 1) * points_per_bit
+            
+            if bit == 0:
+                mask_0[start:end] = 1
+                mask_1[start:end] = 0
+            else:
+                mask_0[start:end] = 0
+                mask_1[start:end] = 1
+                
+        # Combine: Select the active frequency for each segment
+        # Signal = (Mask0 * Carrier0) + (Mask1 * Carrier1)
+        fsk_signal = (mask_0 * carrier_signal_0 * self.amplitude) + \
+                     (mask_1 * carrier_signal_1 * self.amplitude)
+                     
+        return time_axis, fsk_signal
+
+    def demodulate_bfsk(self, signal, baud_rate=1, freq_0=5, freq_1=10, sampling_rate=100):
+        """
+        FSK Demodulation using Correlation (Matched Filter concept).
+        We compare the incoming chunk against local references of freq_0 and freq_1.
+        """
+        bit_duration = 1.0 / baud_rate
+        points_per_bit = int(sampling_rate * bit_duration)
+        
+        demodulated_bits = []
+        
+        # Generate local reference carriers for ONE bit duration
+        t_ref = np.linspace(0, bit_duration, points_per_bit, endpoint=False)
+        ref_signal_0 = np.sin(2 * np.pi * freq_0 * t_ref)
+        ref_signal_1 = np.sin(2 * np.pi * freq_1 * t_ref)
+        
+        for i in range(0, len(signal), points_per_bit):
+            chunk = signal[i : i + points_per_bit]
+            
+            if len(chunk) < points_per_bit:
+                break
+            
+            # Correlation: Multiply chunk by reference and Sum
+            # If the chunk contains freq_0, correlation with ref_signal_0 will be high.
+            # If the chunk contains freq_1, correlation with ref_signal_0 will be low (near zero).
+            score_0 = np.sum(chunk * ref_signal_0)
+            score_1 = np.sum(chunk * ref_signal_1)
+            
+            # Compare scores
+            if score_1 > score_0:
+                demodulated_bits.append(1)
+            else:
+                demodulated_bits.append(0)
+                
+        return np.array(demodulated_bits)
+
+
+    def modulate_mpsk(self, bits, M=2, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """
+        M-ary Phase Shift Keying (MPSK) Modulation.
+        Can function as BPSK (M=2), QPSK (M=4), 8-PSK (M=8), etc.
+        
+        Args:
+            M: Number of phases (Must be a power of 2: 2, 4, 8, 16...)
+            baud_rate: Symbols per second (Not bits per second!)
+        """
+        bits = np.array(bits)
+        
+        # 1. Calculate bits per symbol (k)
+        # For M=2 -> k=1, M=4 -> k=2, M=8 -> k=3
+        k = int(np.log2(M))
+        
+        # Ensure input bit length is divisible by k (pad with 0s if needed)
+        remainder = len(bits) % k
+        if remainder != 0:
+            padding = np.zeros(k - remainder, dtype=int)
+            bits = np.concatenate([bits, padding])
+            
+        # 2. Group bits into symbols
+        # Reshape bits into a matrix of rows with k items
+        reshaped_bits = bits.reshape(-1, k)
+        
+        # Convert binary rows to integer values (0 to M-1)
+        # Example: [1, 0] -> 2
+        # We use powers of 2: [1, 2, 4...] logic
+        powers_of_two = 2 ** np.arange(k)[::-1]
+        symbols = (reshaped_bits * powers_of_two).sum(axis=1)
+        
+        # 3. Generate Signal
+        symbol_duration = 1.0 / baud_rate
+        points_per_symbol = int(sampling_rate * symbol_duration)
+        mpsk_signal = []
+        
+        # We need a continuous time axis for the plot
+        total_symbols = len(symbols)
+        
+        for i, sym_val in enumerate(symbols):
+            # Calculate Phase Shift for this symbol
+            # Phase = symbol_val * (2*pi / M)
+            phase_shift = sym_val * (2 * np.pi / M)
+            
+            # Generate time for this specific symbol slot
+            # Note: We use local time t (0 to duration) for the sine wave 
+            # to make the phase shift clearly visible relative to t=0 base.
+            t = np.linspace(0, symbol_duration, points_per_symbol, endpoint=False)
+            
+            # Waveform: A * sin(2*pi*f*t + phase)
+            segment = self.amplitude * np.sin(2 * np.pi * carrier_freq * t + phase_shift)
+            
+            mpsk_signal.extend(segment)
+            
+        total_points = len(mpsk_signal)
+        # Create a full time axis for return
+        time_axis = np.linspace(0, total_symbols * symbol_duration, total_points, endpoint=False)
+        
+        return time_axis, np.array(mpsk_signal)
+
+    def demodulate_mpsk(self, signal, M=2, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """
+        MPSK Demodulation using Coherent Detection (Correlation with Reference Phases).
+        """
+        k = int(np.log2(M))
+        symbol_duration = 1.0 / baud_rate
+        points_per_symbol = int(sampling_rate * symbol_duration)
+        
+        demodulated_bits = []
+        
+        # Pre-calculate ALL possible reference signals (0 to M-1)
+        references = []
+        t_ref = np.linspace(0, symbol_duration, points_per_symbol, endpoint=False)
+        
+        for sym_val in range(M):
+            phase_shift = sym_val * (2 * np.pi / M)
+            ref_sig = np.sin(2 * np.pi * carrier_freq * t_ref + phase_shift)
+            references.append(ref_sig)
+            
+        # Loop through the signal symbol by symbol
+        for i in range(0, len(signal), points_per_symbol):
+            chunk = signal[i : i + points_per_symbol]
+            
+            if len(chunk) < points_per_symbol:
+                break
+            
+            # Find which reference correlates best with the chunk
+            best_correlation = -float('inf')
+            best_symbol = 0
+            
+            for sym_val, ref_sig in enumerate(references):
+                # Correlation = sum(chunk * ref)
+                correlation = np.sum(chunk * ref_sig)
+                
+                if correlation > best_correlation:
+                    best_correlation = correlation
+                    best_symbol = sym_val
+            
+            # Convert the best symbol (int) back to bits (binary)
+            # Example: 2 -> [1, 0] (for k=2)
+            # Using bitwise operations to extract bits
+            binary_string = format(best_symbol, f'0{k}b') # e.g., '10'
+            symbol_bits = [int(b) for b in binary_string]
+            
+            demodulated_bits.extend(symbol_bits)
+            
+        return np.array(demodulated_bits)
+
+
+
+# TEST ALANI 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
+    import numpy as np
     
+    # Sınıf örneğini oluşturuyoruz
     da = DigitalToAnalog()
     
-    # Test Data
-    original_bits = [1, 0, 1, 1, 0, 1, 0]
-    print(f"Original Bits: {original_bits}")
-    
-    # --- TEST ASK ---
-    # Carrier frequency should be higher than baud rate for good visualization
-    # Baud Rate: 1 bit/sec, Carrier Freq: 5 Hz (5 cycles per bit)
-    t, s = da.modulate_ask(original_bits, baud_rate=1, carrier_freq=3, sampling_rate=1000)
-    
-    recovered_bits = da.demodulate_ask(s, baud_rate=1, carrier_freq=3, sampling_rate=1000)
-    print(f"Recovered Bits: {list(recovered_bits)}")
-    
-    if list(original_bits) == list(recovered_bits):
-        print("RESULT: SUCCESS! ASK works correctly.")
-    else:
-        print("RESULT: FAILURE! Data mismatch.")
+    def test_da_modulation(name, mod_func, demod_func, test_bits, **kwargs):
+        """
+        Digital-to-Analog modülasyonları test etmek için genel yardımcı fonksiyon.
+        **kwargs: baud_rate, carrier_freq, freq_0, freq_1 gibi parametreleri dinamik alır.
+        """
+        print(f"\n{'='*60}")
+        print(f"Testing {name}...")
+        print(f"Original Bits:  {test_bits}")
         
-    # Visualization
-    plt.figure(figsize=(10, 4))
-    plt.plot(t, s)
-    plt.title("Amplitude Shift Keying (ASK)")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Amplitude (V)")
-    plt.grid(True)
-    
-    # Draw bit boundaries
-    for x in range(len(original_bits) + 1):
-        plt.axvline(x, color='red', linestyle='--', alpha=0.3)
+        # 1. Modülasyon
+        # kwargs içindeki parametreleri (frekans vb.) fonksiyona iletiyoruz
+        t, s = mod_func(test_bits, **kwargs)
         
-    plt.show()
+        # 2. Demodülasyon
+        recovered_bits = demod_func(s, **kwargs)
+        print(f"Recovered Bits: {list(recovered_bits)}")
+        
+        # 3. Sonuç Kontrolü
+        if list(test_bits) == list(recovered_bits):
+            print(f"RESULT: SUCCESS! {name} works correctly.")
+        else:
+            print(f"RESULT: FAILURE! Data mismatch.")
+        
+        # 4. Görselleştirme
+        plt.figure(figsize=(12, 4))
+        # Analog sinyal olduğu için 'step' yerine 'plot' kullanıyoruz
+        plt.plot(t, s, linewidth=1.5)
+        plt.title(f"{name} Modulation")
+        plt.xlabel("Time (s)")
+        plt.ylabel("Amplitude (V)")
+        plt.grid(True, alpha=0.3)
+        
+        # Bit sınırlarını çiz (Görsellik için)
+        # kwargs içinde baud_rate varsa onu al, yoksa 1 kabul et
+        baud_rate = kwargs.get('baud_rate', 1)
+        bit_duration = 1.0 / baud_rate
+        total_time = len(test_bits) * bit_duration
+        
+        # Dikey çizgilerle bit aralıklarını göster
+        for x in np.arange(0, total_time + bit_duration, bit_duration):
+            plt.axvline(x, color='red', linestyle='--', alpha=0.5)
+            
+        plt.tight_layout()
+        plt.show()
+
+    # --- TEST VERİLERİ ---
+    test_bits = [0, 1, 0, 1, 1, 0, 0, 1]
+    
+    print("="*60)
+    print("DIGITAL-TO-ANALOG MODULATION TESTS")
+    print("="*60)
+    
+    # 1. TEST: ASK (Amplitude Shift Keying)
+    # Parametreleri buraya sözlük gibi giriyoruz
+    test_da_modulation(
+        name="ASK (Amplitude Shift Keying)", 
+        mod_func=da.modulate_ask, 
+        demod_func=da.demodulate_ask, 
+        test_bits=test_bits,
+        baud_rate=1, 
+        carrier_freq=4,  # Her bit içine 4 tam dalga sığsın
+        sampling_rate=1000
+    )
+    
+    # 2. TEST: FSK (Frequency Shift Keying)
+    test_da_modulation(
+        name="FSK (Frequency Shift Keying)", 
+        mod_func=da.modulate_bfsk, 
+        demod_func=da.demodulate_bfsk, 
+        test_bits=test_bits,
+        baud_rate=1,
+        freq_0=4,   # 0 biti için 4 Hz
+        freq_1=8,   # 1 biti için 8 Hz
+        sampling_rate=1000
+    )
+    
+    print("\n" + "="*60)
+    print("ALL TESTS COMPLETED!")
+    print("="*60)
+
+
+    # 3. TEST: QPSK (M=4) -> 2 bits per symbol
+    # Notice: baud_rate is symbol rate. 
+    # If baud_rate=1 and M=4, we are sending 2 bits per second.
+    test_da_modulation(
+        name="QPSK (M=4, Phase Shift Keying)", 
+        mod_func=da.modulate_mpsk, 
+        demod_func=da.demodulate_mpsk, 
+        test_bits=test_bits,
+        M=4,        # QPSK
+        baud_rate=1,
+        carrier_freq=2, # Keep freq low to see phase shifts easily
+        sampling_rate=1000
+    )
+
+    # 4. TEST: BPSK (M=2) -> 1 bit per symbol (Standard PSK)
+    test_da_modulation(
+        name="BPSK (M=2)", 
+        mod_func=da.modulate_mpsk, 
+        demod_func=da.demodulate_mpsk, 
+        test_bits=test_bits,
+        M=2,
+        baud_rate=1,
+        carrier_freq=2,
+        sampling_rate=1000
+    )
+
+    # 5. TEST: MPSK (M=8) -> 3 bits per symbol (8-PSK)
+    test_da_modulation(
+        name="MPSK (M=8)", 
+        mod_func=da.modulate_mpsk, 
+        demod_func=da.demodulate_mpsk, 
+        test_bits=test_bits,
+        M=8,
+        baud_rate=1,
+        carrier_freq=2,
+        sampling_rate=1000
+    )
+
