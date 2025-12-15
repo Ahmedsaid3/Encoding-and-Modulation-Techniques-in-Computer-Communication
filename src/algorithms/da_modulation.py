@@ -43,6 +43,106 @@ class DigitalToAnalog:
         modulated_signal = carrier_signal * envelope
         
         return time_axis, modulated_signal
+    
+    def modulate_mfsk(self, bits, M=4, baud_rate=1, base_freq=5, freq_sep=3, sampling_rate=1000):
+        bits = np.array(bits)
+        k = int(np.log2(M))                # bits per symbol
+        bit_duration = 1 / baud_rate
+        points_per_symbol = int(bit_duration * sampling_rate)
+
+        # bits → symbols
+        symbols = []
+        for i in range(0, len(bits), k):
+            symbol = 0
+            for b in bits[i:i+k]:
+                symbol = (symbol << 1) | b
+            symbols.append(symbol)
+
+        signal = []
+
+        for symbol in symbols:
+            freq = base_freq + symbol * freq_sep
+            t = np.linspace(0, bit_duration, points_per_symbol, endpoint=False)
+            segment = np.sin(2 * np.pi * freq * t)
+            signal.extend(segment)
+
+        time_axis = np.linspace(0, len(symbols) * bit_duration, len(signal), endpoint=False)
+        return time_axis, np.array(signal)
+    
+    def demodulate_mfsk(self, signal, M=4, baud_rate=1, base_freq=5, freq_sep=3, sampling_rate=1000):
+        k = int(np.log2(M))
+        bit_duration = 1 / baud_rate
+        points_per_symbol = int(bit_duration * sampling_rate)
+
+        # reference signals
+        t = np.linspace(0, bit_duration, points_per_symbol, endpoint=False)
+        references = [
+            np.sin(2 * np.pi * (base_freq + i * freq_sep) * t)
+            for i in range(M)
+        ]
+
+        decoded_bits = []
+
+        for i in range(0, len(signal), points_per_symbol):
+            chunk = signal[i:i+points_per_symbol]
+            if len(chunk) < points_per_symbol:
+                break
+
+            # correlation
+            scores = [np.sum(chunk * ref) for ref in references]
+            symbol = np.argmax(scores)
+
+            # symbol → bits
+            for b in range(k-1, -1, -1):
+                decoded_bits.append((symbol >> b) & 1)
+
+        return np.array(decoded_bits)
+
+
+
+    def modulate_dpsk(self, bits, baud_rate=1, carrier_freq=5, sampling_rate=1000):
+        bits = np.array(bits)
+        bit_duration = 1 / baud_rate
+        points_per_bit = int(bit_duration * sampling_rate)
+
+        current_phase = 0
+        signal = []
+
+        for bit in bits:
+            if bit == 1:
+                current_phase += np.pi   # phase flip
+
+            t = np.linspace(0, bit_duration, points_per_bit, endpoint=False)
+            segment = np.sin(2 * np.pi * carrier_freq * t + current_phase)
+            signal.extend(segment)
+
+        time_axis = np.linspace(0, len(bits) * bit_duration, len(signal), endpoint=False)
+        return time_axis, np.array(signal)
+
+    def demodulate_dpsk(self, signal, baud_rate=1, carrier_freq=None, sampling_rate=1000):
+        bit_duration = 1 / baud_rate
+        points_per_bit = int(bit_duration * sampling_rate)
+
+        decoded_bits = []
+        prev_chunk = None
+
+        for i in range(0, len(signal), points_per_bit):
+            chunk = signal[i:i+points_per_bit]
+            if len(chunk) < points_per_bit:
+                break
+
+            if prev_chunk is None:
+                prev_chunk = chunk
+                continue
+
+            corr = np.sum(prev_chunk * chunk)
+
+            # same phase → 0, flipped → 1
+            decoded_bits.append(0 if corr > 0 else 1)
+            prev_chunk = chunk
+
+        return np.array(decoded_bits)
+
 
     def demodulate_ask(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
         """
@@ -277,7 +377,7 @@ if __name__ == "__main__":
     # Sınıf örneğini oluşturuyoruz
     da = DigitalToAnalog()
     
-    def test_da_modulation(name, mod_func, demod_func, test_bits, **kwargs):
+    def test_da_modulation(name, mod_func, demod_func, test_bits, drop_first=False, **kwargs):
         """
         Digital-to-Analog modülasyonları test etmek için genel yardımcı fonksiyon.
         **kwargs: baud_rate, carrier_freq, freq_0, freq_1 gibi parametreleri dinamik alır.
@@ -294,12 +394,14 @@ if __name__ == "__main__":
         recovered_bits = demod_func(s, **kwargs)
         print(f"Recovered Bits: {list(recovered_bits)}")
         
-        # 3. Sonuç Kontrolü
-        if list(test_bits) == list(recovered_bits):
+        # 3.0 DPSK için hazırlık
+        expected = test_bits[1:] if drop_first else test_bits
+
+        if list(recovered_bits[:len(expected)]) == list(expected):
             print(f"RESULT: SUCCESS! {name} works correctly.")
         else:
             print(f"RESULT: FAILURE! Data mismatch.")
-        
+
         # 4. Görselleştirme
         plt.figure(figsize=(12, 4))
         # Analog sinyal olduğu için 'step' yerine 'plot' kullanıyoruz
@@ -323,7 +425,7 @@ if __name__ == "__main__":
         plt.show()
 
     # --- TEST VERİLERİ ---
-    test_bits = [0, 1, 0, 1, 1, 0, 0, 1]
+    test_bits = [0, 1, 0, 1, 1, 1, 1, 0]
     
     print("="*60)
     print("DIGITAL-TO-ANALOG MODULATION TESTS")
@@ -353,10 +455,6 @@ if __name__ == "__main__":
         sampling_rate=1000
     )
     
-    print("\n" + "="*60)
-    print("ALL TESTS COMPLETED!")
-    print("="*60)
-
 
     # 3. TEST: QPSK (M=4) -> 2 bits per symbol
     # Notice: baud_rate is symbol rate. 
@@ -395,4 +493,30 @@ if __name__ == "__main__":
         carrier_freq=2,
         sampling_rate=1000
     )
+
+    # 6. TEST: MFSK (M-ary FSK)
+    test_da_modulation(
+        name="MFSK (M=4)", 
+        mod_func=da.modulate_mfsk, 
+        demod_func=da.demodulate_mfsk, 
+        test_bits=test_bits,
+        M=4,               # 4-FSK → 2 bits per symbol
+        baud_rate=1,
+        base_freq=3,       # starting frequency
+        freq_sep=3,        # spacing between tones
+        sampling_rate=1000
+    )
+
+
+    test_da_modulation(
+        name="DPSK (Differential PSK)", 
+        mod_func=da.modulate_dpsk, 
+        demod_func=da.demodulate_dpsk, 
+        test_bits=test_bits,
+        drop_first=True,         
+        baud_rate=1,
+        carrier_freq=2,
+        sampling_rate=1000
+    )
+
 
