@@ -23,6 +23,55 @@ class AnalogToAnalog:
         # s(t) = cos(2 * pi * fc * t)
         return np.cos(2 * np.pi * self.fc * t)
 
+    def demodulate_fm(self, modulated_signal):
+            """
+            FM Demodulation (Slope Detector / Differentiator)
+            Logic: Frequency is the rate of change of phase.
+            We differentiate (np.diff) to find how fast the angle is changing.
+            """
+            # 1. Hilbert Transform is better, but complex. 
+            # Let's use a simpler logic: Instantaneous Frequency extraction via phase difference.
+            # This is an approximation for simulation purposes.
+            
+            # Get analytic signal to extract phase
+            from scipy.signal import hilbert
+            analytic_signal = hilbert(modulated_signal)
+            instantaneous_phase = np.unwrap(np.angle(analytic_signal))
+            
+            # 2. Differentiate Phase to get Frequency
+            instantaneous_freq = np.diff(instantaneous_phase) * self.fs / (2.0 * np.pi)
+            
+            # 3. Remove Carrier Frequency to get Message
+            demodulated = instantaneous_freq - self.fc
+            
+            # Pad with one zero to match length
+            return np.append(demodulated, 0)
+
+    def modulate_fm(self, analog_signal, kf=20.0):
+            """
+            Frequency Modulation (FM)
+            Theory: The 'Gas Pedal' Pattern.
+            Formula: s(t) = Ac * cos(2*pi*fc*t + 2*pi*kf * integral(m(t)))
+            
+            Logic:
+            Frequency is a RATE (Speed). To determine the current POSITION (Phase)
+            based on a changing speed, we must sum up (Integrate) the history of speeds.
+            """
+            duration = len(analog_signal) / self.fs
+            t = self._get_time_array(duration)
+            
+            # 1. Integration (The "Odometer" Logic)
+            # We use cumsum to calculate "Total Distance Traveled" by the phase
+            # We divide by fs because integral = sum(x) * dt, and dt = 1/fs
+            integral_message = np.cumsum(analog_signal) / self.fs
+            
+            # 2. Apply Modulation
+            # notice we are INSIDE the cosine function
+            phase = 2 * np.pi * self.fc * t + (2 * np.pi * kf * integral_message)
+            modulated_signal = np.cos(phase)
+            
+            return t, modulated_signal
+
     def modulate_am(self, analog_signal, mod_index=1.0):
         """
         Amplitude Modulation (AM)
@@ -109,6 +158,9 @@ if __name__ == "__main__":
     # AM: Look for the "Envelope" (Shape matches message)
     _, am_sig = aa.modulate_am(message_signal, mod_index=0.8)
     
+    # FM: Look for the "Accordion" (Squeezing and Stretching)
+    _, fm_sig = aa.modulate_fm(message_signal, kf=30.0)
+    
     # PM: Look for the "Shift" (Harder to see on sine, but similar to FM)
     _, pm_sig = aa.modulate_pm(message_signal, kp=3.0)
 
@@ -128,8 +180,15 @@ if __name__ == "__main__":
     plt.ylabel("Voltage")
     plt.grid(True, alpha=0.3)
 
-    # Plot PM
+    # Plot FM
     plt.subplot(4, 1, 3)
+    plt.plot(t_msg, fm_sig, 'r')
+    plt.title("FM Output (Frequency/Speed Changes)")
+    plt.ylabel("Voltage")
+    plt.grid(True, alpha=0.3)
+
+    # Plot PM
+    plt.subplot(4, 1, 4)
     plt.plot(t_msg, pm_sig, 'm')
     plt.title("PM Output (Phase/Position Shifts)")
     plt.xlabel("Time (s)")
@@ -138,5 +197,3 @@ if __name__ == "__main__":
 
     plt.tight_layout()
     plt.show()
-
-import numpy as np
