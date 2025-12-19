@@ -15,37 +15,53 @@ try:
     from src.algorithms.dd_encoding import DigitalToDigital as OrigDD
     from src.algorithms.da_modulation import DigitalToAnalog as OrigDA
     from src.algorithms.ad_encoding import AnalogToDigital as OrigAD
+    from src.algorithms.aa_modulation import AnalogToAnalog as OrigAA
     
     # 2. V1 (ARKADAŞ - ChatGPT)
-    from ai_optimized_v1.algorithms.dd_encoding import DigitalToDigital as FriendDD
-    from ai_optimized_v1.algorithms.da_modulation import DigitalToAnalog as FriendDA
-    from ai_optimized_v1.algorithms.ad_encoding import AnalogToDigital as FriendAD
-    
+    # V1 klasöründe bu dosyaların olduğundan emin olun, yoksa hata verebilir.
+    try:
+        from ai_optimized_v1.algorithms.dd_encoding import DigitalToDigital as FriendDD
+        from ai_optimized_v1.algorithms.da_modulation import DigitalToAnalog as FriendDA
+        from ai_optimized_v1.algorithms.ad_encoding import AnalogToDigital as FriendAD
+        from ai_optimized_v1.algorithms.aa_modulation import AnalogToAnalog as FriendAA
+    except ImportError:
+        # Eğer arkadaşınız henüz AA yazmadıysa veya dosya yoksa, geçici olarak Orijinal'i kullan
+        print("⚠️ Uyarı: V1 modüllerinden bazıları eksik, eksikler için Orijinal kullanılacak.")
+        from src.algorithms.dd_encoding import DigitalToDigital as FriendDD
+        from src.algorithms.da_modulation import DigitalToAnalog as FriendDA
+        from src.algorithms.ad_encoding import AnalogToDigital as FriendAD
+        from src.algorithms.aa_modulation import AnalogToAnalog as FriendAA
+
     # 3. V2 (GEMINI - Sen)
     from ai_optimized_v2.algorithms.dd_encoding import DigitalToDigital as GeminiDD
     from ai_optimized_v2.algorithms.da_modulation import DigitalToAnalog as GeminiDA
     from ai_optimized_v2.algorithms.ad_encoding import AnalogToDigital as GeminiAD
+    from ai_optimized_v2.algorithms.aa_modulation import AnalogToAnalog as GeminiAA
 
     print("✅ Tüm Modüller (Original, V1, V2) başarıyla yüklendi.")
 
 except ImportError as e:
     print(f"❌ Modül hatası: {e}")
-    print("⚠️ Lütfen 'ai_optimized_v1' ve 'ai_optimized_v2' klasörlerinin dolu olduğundan emin olun.")
+    print("⚠️ Lütfen 'src', 'ai_optimized_v1' ve 'ai_optimized_v2' klasörlerinin ve dosyalarının tam olduğundan emin olun.")
     sys.exit(1)
 
 def run_category_benchmark(category_name, tests, n_bits):
     """
-    Belirli bir kategori (DD, DA veya AD) için testleri çalıştırır ve sonuçları döndürür.
+    Belirli bir kategori (DD, DA, AD veya AA) için testleri çalıştırır ve sonuçları döndürür.
     """
     print(f"\n{'='*70}")
-    print(f"BENCHMARK KATEGORİSİ: {category_name} (Veri Boyutu: {n_bits} bit)")
+    print(f"BENCHMARK KATEGORİSİ: {category_name} (Veri Boyutu: {n_bits} point)")
     print(f"{'='*70}")
 
     # Test verilerini hazırla
     bits = np.random.randint(0, 2, n_bits)
-    # Analog sinyal (PCM/Delta için)
-    t = np.linspace(0, 1, n_bits)
-    analog_signal = np.sin(2 * np.pi * 5 * t)
+    # Analog sinyal (PCM/Delta ve AA için)
+    # AA için sampling rate (fs) n_bits kadar olsun ki yük testi yapabilelim
+    duration = 1.0
+    fs = n_bits 
+    t = np.linspace(0, duration, fs)
+    # Karmaşık bir analog sinyal
+    analog_signal = np.sin(2 * np.pi * 5 * t) + 0.5 * np.sin(2 * np.pi * 12 * t)
     
     # Nesneleri başlat (Her kategori için ayrı ayrı)
     instances = {
@@ -57,6 +73,12 @@ def run_category_benchmark(category_name, tests, n_bits):
         },
         "AD": {
             "Orig": OrigAD(), "V1": FriendAD(), "V2": GeminiAD()
+        },
+        "AA": {
+            # AA için sampling_rate olarak n_bits (fs) veriyoruz
+            "Orig": OrigAA(carrier_freq=100, sampling_rate=fs), 
+            "V1": FriendAA(carrier_freq=100, sampling_rate=fs), 
+            "V2": GeminiAA(carrier_freq=100, sampling_rate=fs)
         }
     }
     
@@ -77,11 +99,15 @@ def run_category_benchmark(category_name, tests, n_bits):
             temp_mod_method = method_name.replace("demodulate", "modulate").replace("decode", "encode")
             if "pcm" in method_name: temp_mod_method = "encode_pcm"
             
-            # Modülasyonu çalıştırıp sinyali al
-            if "pcm" in method_name:
-                signal_arg = current_instances["Orig"].encode_pcm(analog_signal, **kwargs)[0] # bits döner
+            # Sinyali üret
+            if category_name == "AA":
+                # AA modülasyonu analog sinyal alır
+                signal_arg = getattr(current_instances["Orig"], temp_mod_method)(analog_signal, **kwargs)[1]
+            elif "pcm" in method_name:
+                # PCM encode bits döner
+                signal_arg = current_instances["Orig"].encode_pcm(analog_signal, **kwargs)[0] 
             else:
-                # Modülasyon genelde (time, signal) döner, [1] ile sinyali alıyoruz
+                # DD/DA Modülasyon genelde (time, signal) döner, [1] ile sinyali alıyoruz ve bits alır
                 signal_arg = getattr(current_instances["Orig"], temp_mod_method)(bits, **kwargs)[1]
             args = [signal_arg]
 
@@ -134,7 +160,7 @@ def plot_category_results(results, category_name, filename):
     ax.legend()
     ax.grid(axis='y', linestyle='--', alpha=0.3)
     
-    # Sadece V2'nin üzerine hızlanma katını yazalım (Okunabilirlik için)
+    # Sadece V2'nin üzerine hızlanma katını yazalım
     for i in range(len(labels)):
         if t_v2[i] > 1e-9:
             speedup = t_orig[i] / t_v2[i]
@@ -143,10 +169,10 @@ def plot_category_results(results, category_name, filename):
                     ha='center', va='bottom', fontsize=9, fontweight='bold', color='#006266')
 
     plt.tight_layout()
-    # save_path = f'benchmark/{filename}'
-    # plt.savefig(save_path)
-    # print(f"✅ Grafik kaydedildi: {save_path}")
-    plt.show() # İstersen açabilirsin
+    save_path = f'benchmark/{filename}'
+    plt.savefig(save_path)
+    print(f"✅ Grafik kaydedildi: {save_path}")
+    # plt.show() # İstersen açabilirsin
 
 if __name__ == "__main__":
     # Veri boyutu (Load Test için yüksek tutuyoruz)
@@ -191,5 +217,18 @@ if __name__ == "__main__":
     ]
     results_ad = run_category_benchmark("AD", ad_tests, N_BITS)
     plot_category_results(results_ad, "Analog-to-Digital Benchmark", "benchmark_ad.png")
+
+    # --- 4. Analog-to-Analog (AA) Testleri ---
+    # 4. AA (YENİ)
+    aa_tests = [
+        ("AM Mod", "modulate_am", "analog", {}),
+        ("AM Demod", "demodulate_am", "signal_from_mod", {}),
+        ("FM Mod", "modulate_fm", "analog", {}),
+        ("FM Demod", "demodulate_fm", "signal_from_mod", {}),
+        ("PM Mod", "modulate_pm", "analog", {"kp": 2.0}), # kp eklendi
+        ("PM Demod", "demodulate_pm", "signal_from_mod", {"kp": 2.0}) # kp eklendi
+    ]
+    results_aa = run_category_benchmark("AA", aa_tests, 50000)
+    plot_category_results(results_aa, "Analog-to-Analog Benchmark", "benchmark_aa.png")
     
     print("\n🎉 TÜM BENCHMARK TESTLERİ TAMAMLANDI!")

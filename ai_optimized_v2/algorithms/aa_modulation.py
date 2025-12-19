@@ -13,14 +13,10 @@ class AnalogToAnalog:
         # Linspace yerine arange daha hızlıdır
         return np.arange(int(duration * self.fs)) * self.dt
 
-    def _get_carrier(self, t):
-        return np.cos(self.two_pi_fc * t)
-
     def modulate_am(self, analog_signal, mod_index=1.0):
         """
         GEMINI OPTIMIZATION (V2):
         - In-place operations (bellek dostu).
-        - Gereksiz array kopyalamalardan kaçınma.
         """
         duration = len(analog_signal) * self.dt
         t = self._get_time_array(duration)
@@ -28,34 +24,24 @@ class AnalogToAnalog:
         # 1. Normalize (Vektörel Max Bulma)
         max_val = np.max(np.abs(analog_signal))
         if max_val > 0:
-            # analog_signal / max_val işlemi yeni array yaratır.
-            # Bunu modülasyon formülünün içine gömelim.
             scale = mod_index / max_val
-            # Formül: (1 + scale * signal) * cos(...)
             envelope = 1 + analog_signal * scale
         else:
             envelope = 1 + analog_signal * mod_index
 
-        # Carrier'ı ayrı hesaplayıp çarpmak yerine tek satırda
         modulated_signal = envelope * np.cos(self.two_pi_fc * t)
-        
         return t, modulated_signal
 
     def modulate_fm(self, analog_signal, kf=20.0):
         """
         GEMINI OPTIMIZATION (V2):
         - np.cumsum zaten hızlıdır.
-        - Faz hesaplamasını in-place yaparak bellekten tasarruf ediyoruz.
         """
         duration = len(analog_signal) * self.dt
         t = self._get_time_array(duration)
         
-        # 1. Entegre et (Integral)
         integral_message = np.cumsum(analog_signal) * self.dt
         
-        # 2. Fazı hesapla: 2*pi*fc*t + 2*pi*kf*integral
-        # Bellek optimizasyonu için t array'ini 'phase' olarak yeniden kullanabiliriz
-        # ama okunabilirlik bozulmasın diye yeni değişken açıyoruz.
         phase = self.two_pi_fc * t
         phase += (2 * np.pi * kf * integral_message) # In-place add
         
@@ -70,7 +56,6 @@ class AnalogToAnalog:
         duration = len(analog_signal) * self.dt
         t = self._get_time_array(duration)
         
-        # Phase = 2*pi*fc*t + kp*m(t)
         phase = self.two_pi_fc * t
         phase += kp * analog_signal
         
@@ -80,22 +65,18 @@ class AnalogToAnalog:
     def demodulate_am(self, modulated_signal):
         """
         GEMINI OPTIMIZATION (V2) - MAJOR SPEEDUP:
-        - Orijinal kod 'np.convolve' kullanıyor (O(N*W) karmaşıklığı).
-        - V2, 'Running Sum' (Cumsum) tekniği kullanıyor (O(N) karmaşıklığı).
-        - Büyük veri setlerinde 100x+ hızlanma sağlar.
+        - 'Running Sum' (Cumsum) tekniği ile O(N) filtreleme.
         """
-        # 1. Rectification
         rectified = np.abs(modulated_signal)
         
-        # 2. Fast Moving Average (Boxcar Filter) using Cumsum
         window_size = int(self.fs / self.fc) * 2
         if window_size < 1: window_size = 1
         
-        # Cumsum hilesi: MovingAvg[i] = (Cumsum[i] - Cumsum[i-W]) / W
+        # Cumsum hilesi: MovingAvg
         cumsum_vec = np.cumsum(np.insert(rectified, 0, 0)) 
         demodulated = (cumsum_vec[window_size:] - cumsum_vec[:-window_size]) / window_size
         
-        # Boyut düzeltme (Convolution 'same' modunu taklit etmek için padding)
+        # Boyut düzeltme
         pad_size = len(modulated_signal) - len(demodulated)
         if pad_size > 0:
             demodulated = np.pad(demodulated, (pad_size//2, pad_size - pad_size//2), mode='edge')
@@ -105,25 +86,45 @@ class AnalogToAnalog:
     def demodulate_fm(self, modulated_signal):
         """
         GEMINI OPTIMIZATION (V2):
-        - 'np.unwrap' ve 'np.diff' yavaştır.
-        - Faz Farkı (Phase Differencing) tekniği kullanıyoruz:
-          angle(z[n] * conj(z[n-1]))
-        - Bu teknik unwrap gerektirmez ve türevi direkt verir.
+        - Phase Differencing (Unwrap gerektirmez, çok hızlı).
         """
-        # 1. Analytic Signal (Hilbert yine de gerekli, FFT tabanlı olduğu için hızlıdır)
         analytic_signal = hilbert(modulated_signal)
         
-        # 2. Phase Differencing (Unwrap gerektirmez!)
         # z[n] * z*[n-1] işleminin açısı, faz farkını (frekansı) verir.
-        # Bu yöntem np.diff(np.unwrap(angle)) ile aynı matematiksel sonucu verir ama çok daha hızlıdır.
-        
-        # Conjugate delay multiply
-        # z[1:] * conj(z[:-1])
         phase_diff = analytic_signal[1:] * np.conj(analytic_signal[:-1])
         instantaneous_freq = np.angle(phase_diff) * (self.fs / (2.0 * np.pi))
         
-        # 3. Remove Carrier
         demodulated = instantaneous_freq - self.fc
-        
-        # Boyut eşitleme (append 0)
         return np.append(demodulated, 0)
+
+    def demodulate_pm(self, modulated_signal, kp=2.0):
+        """
+        GEMINI OPTIMIZATION (V2):
+        - Down-conversion (Heterodyning) Yöntemi.
+        - Fazı çıkarmak yerine, komple sinyali Baseband'e indiriyoruz.
+        - Bu yöntem 'np.unwrap' hatalarını azaltır ve matematiksel olarak daha sağlamdır.
+        """
+        # 1. Analytic Signal
+        analytic_signal = hilbert(modulated_signal)
+        
+        # 2. Down-conversion (Carrier Removal in Complex Domain)
+        # Sinyali e^(-j*wc*t) ile çarparak frekansı 0'a kaydırıyoruz.
+        # Bu işlem taşıyıcıyı matematiksel olarak "siler".
+        duration = len(modulated_signal) * self.dt
+        t = self._get_time_array(duration) # t arrayini yeniden oluşturuyoruz (veya parametre alabiliriz)
+        
+        # Downconverter vektörü: e^(-j * 2*pi*fc * t)
+        downconverter = np.exp(-1j * self.two_pi_fc * t)
+        
+        # Baseband sinyal (Taşıyıcısız, sadece mesajın fazı kaldı)
+        baseband_signal = analytic_signal * downconverter
+        
+        # 3. Angle Extraction & Unwrapping
+        # Artık açıyı aldığımızda doğrudan kp*m(t)'yi elde ederiz.
+        demodulated_phase = np.unwrap(np.angle(baseband_signal))
+        
+        # 4. Scaling
+        # Remove DC offset ve kp'ye böl
+        demodulated = (demodulated_phase - np.mean(demodulated_phase)) / kp
+        
+        return demodulated
