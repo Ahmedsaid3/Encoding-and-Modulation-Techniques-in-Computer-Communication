@@ -244,30 +244,55 @@ class DigitalToAnalog:
         
         return t, signal
 
-    def demodulate_dpsk(self, signal, baud_rate=1, carrier_freq=None, sampling_rate=1000):
-        # Correlation with PREVIOUS chunk
+    def demodulate_dpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=1000):
+        """
+        GEMINI OPTIMIZATION (V2) - GÜNCELLENDİ:
+        - Arkadaşının mantığına uygun olarak ilk bit için referans sinyal eklendi.
+        - Böylece ilk bit atlanmadan doğru şekilde çözülür.
+        """
         points_per_bit = int(sampling_rate / baud_rate)
         n_bits = len(signal) // points_per_bit
         
+        # Sinyali matrise çevir: (N_bits, Points)
         matrix = signal[:n_bits*points_per_bit].reshape(n_bits, points_per_bit)
         
-        # Current chunks
-        curr = matrix
-        # Previous chunks (shifted)
+        # REFERANS SİNYAL OLUŞTURMA (Arkadaşının eklediği mantık)
+        # İlk biti kıyaslamak için "öncesi" olarak temiz bir taşıyıcı (0 faz) yaratıyoruz.
+        t_ref = np.arange(points_per_bit) / sampling_rate
+        # Eğer carrier_freq parametresi None gelirse varsayılan 5 kullan (Güvenlik)
+        cf = carrier_freq if carrier_freq is not None else 5
+        reference_signal = np.sin(2 * np.pi * cf * t_ref)
+        
+        # MATRİS KAYDIRMA (VECTORIZED SHIFT)
+        # prev dizisini oluştururken:
+        # 1. matrix'i 1 aşağı kaydır.
+        # 2. En başa (ilk satıra) az önce oluşturduğumuz referans sinyali koy.
         prev = np.roll(matrix, 1, axis=0)
+        prev[0] = reference_signal 
         
-        # We can't demodulate the first bit properly without knowing start phase
-        # but let's assume we ignore the first result or handle it
+        # KORELASYON (Dot Product)
+        # Şu anki bit ile bir önceki (veya referans) arasındaki benzerlik
+        corrs = np.sum(matrix * prev, axis=1)
         
-        # Row-wise dot product
-        # sum(curr * prev, axis=1)
-        corrs = np.sum(curr * prev, axis=1)
-        
-        # If corr > 0 -> Phase same -> 0
-        # If corr < 0 -> Phase flipped -> 1
+        # Pozitif korelasyon -> Faz değişmemiş -> 0
+        # Negatif korelasyon -> Faz değişmiş -> 1
         decoded_bits = np.where(corrs > 0, 0, 1)
         
-        # First bit is invalid because prev was wrapped from end
-        decoded_bits[0] = 0 
-        
         return decoded_bits
+    
+    # ==========================================
+        # YENİ EKLENEN WRAPPER FONKSİYONLAR
+        # (Arka planda optimize edilmiş demodulate_mpsk kullanırlar)
+        # ==========================================
+
+    def demodulate_bpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """BPSK Wrapper (M=2)"""
+        return self.demodulate_mpsk(signal, M=2, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)
+
+    def demodulate_qpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """QPSK Wrapper (M=4)"""
+        return self.demodulate_mpsk(signal, M=4, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)
+
+    def demodulate_8psk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """8-PSK Wrapper (M=8)"""
+        return self.demodulate_mpsk(signal, M=8, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)

@@ -119,28 +119,41 @@ class DigitalToAnalog:
         time_axis = np.linspace(0, len(bits) * bit_duration, len(signal), endpoint=False)
         return time_axis, np.array(signal)
 
-    def demodulate_dpsk(self, signal, baud_rate=1, carrier_freq=None, sampling_rate=1000):
+    # --- DÜZELTİLMİŞ HALİ ---
+    
+    def demodulate_dpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=1000):
         bit_duration = 1 / baud_rate
         points_per_bit = int(bit_duration * sampling_rate)
-
+    
         decoded_bits = []
-        prev_chunk = None
-
+        
+        # ADIM 1: SİSTEMİ "RESET" DURUMUYLA BAŞLAT
+        # "prev_chunk"a None değil, 0 Fazlı (Değişmemiş) bir sinyal veriyoruz.
+        # Böylece ilk gelen gerçek bit, bu referansla kıyaslanıp çözülebilecek.
+        t_ref = np.linspace(0, bit_duration, points_per_bit, endpoint=False)
+        prev_chunk = np.sin(2 * np.pi * carrier_freq * t_ref) 
+    
+        # ADIM 2: ARTIK HİÇBİR ŞEYİ ATLAMADAN (SKIP YOK) İŞLE
         for i in range(0, len(signal), points_per_bit):
             chunk = signal[i:i+points_per_bit]
+            
+            # Güvenlik kontrolü (Sinyal bütünlüğü için)
             if len(chunk) < points_per_bit:
                 break
-
-            if prev_chunk is None:
-                prev_chunk = chunk
-                continue
-
+            
+            # --- ESKİ KODDAKİ HATALI BLOK SİLİNDİ ---
+            # if prev_chunk is None:  <-- ARTIK BU YOK
+            #    prev_chunk = chunk
+            #    continue
+            # ----------------------------------------
+    
+            # Normal işlem:
             corr = np.sum(prev_chunk * chunk)
-
-            # same phase → 0, flipped → 1
             decoded_bits.append(0 if corr > 0 else 1)
+            
+            # Şimdiki parça, bir sonraki turun referansı olur
             prev_chunk = chunk
-
+    
         return np.array(decoded_bits)
 
 
@@ -520,3 +533,19 @@ if __name__ == "__main__":
     )
 
 
+# ==========================================
+    # YENİ EKLENEN WRAPPER FONKSİYONLAR
+    # (BPSK, QPSK ve 8-PSK için kısayollar)
+    # ==========================================
+
+    def demodulate_bpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """BPSK için yardımcı fonksiyon (M=2)"""
+        return self.demodulate_mpsk(signal, M=2, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)
+
+    def demodulate_qpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """QPSK için yardımcı fonksiyon (M=4)"""
+        return self.demodulate_mpsk(signal, M=4, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)
+
+    def demodulate_8psk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        """8-PSK için yardımcı fonksiyon (M=8)"""
+        return self.demodulate_mpsk(signal, M=8, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)

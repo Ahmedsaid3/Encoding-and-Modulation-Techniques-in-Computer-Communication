@@ -125,18 +125,27 @@ class DigitalToAnalog:
         time_axis = np.linspace(0, len(bits) * bit_duration, signal.size, endpoint=False)
         return time_axis, signal
 
-    def demodulate_dpsk(self, signal, baud_rate=1, carrier_freq=None, sampling_rate=1000):
+    def demodulate_dpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=1000):
         bit_duration = 1 / baud_rate
-        ppb = int(bit_duration * sampling_rate)
+        points_per_bit = int(bit_duration * sampling_rate)
 
-        s = np.asarray(signal, dtype=float)
-        n = s.size // ppb
-        if n <= 1:
-            return np.array([], dtype=int)
+        # Sinyali bit-bloklarına böl
+        usable_len = len(signal) // points_per_bit * points_per_bit
+        signal = signal[:usable_len]
+        chunks = signal.reshape(-1, points_per_bit)
 
-        chunks = s[: n * ppb].reshape(n, ppb)
-        corr = np.sum(chunks[:-1] * chunks[1:], axis=1)
-        return np.where(corr > 0, 0, 1).astype(int)
+        # Referans (0 fazlı taşıyıcı)
+        t = np.arange(points_per_bit) / sampling_rate
+        prev_chunk = np.sin(2 * np.pi * carrier_freq * t)
+
+        decoded = np.empty(len(chunks), dtype=np.int8)
+
+        for i, chunk in enumerate(chunks):
+            corr = np.dot(prev_chunk, chunk)   # np.sum(a*b) yerine dot
+            decoded[i] = 0 if corr > 0 else 1
+            prev_chunk = chunk
+
+        return decoded
 
     # -----------------------------
     # BFSK
@@ -232,3 +241,17 @@ class DigitalToAnalog:
             bstr = format(int(sym), f"0{k}b")
             out.extend(int(c) for c in bstr)
         return np.asarray(out, dtype=int)
+
+
+    # ==========================================
+        # WRAPPER FONKSİYONLAR (Eksikti, Eklendi)
+        # ==========================================
+
+    def demodulate_bpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        return self.demodulate_mpsk(signal, M=2, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)
+
+    def demodulate_qpsk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        return self.demodulate_mpsk(signal, M=4, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)
+
+    def demodulate_8psk(self, signal, baud_rate=1, carrier_freq=5, sampling_rate=100):
+        return self.demodulate_mpsk(signal, M=8, baud_rate=baud_rate, carrier_freq=carrier_freq, sampling_rate=sampling_rate)
