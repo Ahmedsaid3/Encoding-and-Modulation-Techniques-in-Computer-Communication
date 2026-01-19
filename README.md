@@ -151,5 +151,3 @@ Faculty of Computer and Informatics
 
 This project is licensed under the MIT License - see the [LICENSE](https://www.google.com/search?q=LICENSE) file for details.
 
-
-*(Veya dosya içine manuel olarak `numpy`, `matplotlib`, `scipy`, `streamlit` yazıp kaydedebilirsin.)*
